@@ -10,11 +10,11 @@ import tarfile
 import base64
 import uuid
 
+import struct
 import cryptography
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.fernet import Fernet
 from cryptography.exceptions import InvalidKey, InvalidTag
 
 compression_method = ""
@@ -55,8 +55,8 @@ def get_key(verbose_pass=False):
 
 	kdf = Scrypt(salt = salt, length=32, n = 2**20, r=8, p=1)
 
-	#key = base64.urlsafe_b64encode(kdf.derive(password1))
-	key = kdf.derive(password1)
+	key = base64.urlsafe_b64encode(kdf.derive(password1))
+	#key = kdf.derive(password1)
 
 	print("It took ", time.time() - time1, " seconds to generate the key")
 
@@ -72,20 +72,27 @@ def get_key(verbose_pass=False):
 
 
 # <====================== ENCRYPTION =========================>
-def encrypt(input_filename, key):
-	aesgcm = AESGCM(key)
+def encrypt(input_filename, key, block = 1 << 28):
+	fernet = Fernet(key)
 
-	data = None
-	encrypted_data = None
+	encrypted_data = bytes()
+
+	filesize = os.stat(input_filename).st_size
+	enc_size = 0
 
 	with open(input_filename, 'rb') as fin:
-		data = fin.read() # Read the bytes of the input file
+		while True:
+			chunck = fin.read(block)
+			if len(chunck) == 0:
+				break
+			encrypted_chunck = fernet.encrypt(chunck)
+			encrypted_data += struct.pack('<I', len(encrypted_chunck))
+			encrypted_data += encrypted_chunck
+			if len(encrypted_chunck) < block:
+				break
+			enc_size += len(chunck)
+			print("Progress: ", enc_size / filesize)
 
-		nonce = os.urandom(12)
-		auth = str(uuid.uuid4()).encode()
-
-		encrypted_data = aesgcm.encrypt(nonce, data, auth)
-		encrypted_data += b'NC:' + nonce + b'AUTH:' + auth
 
 	return encrypted_data
 
@@ -109,23 +116,23 @@ def run_encryption(folder_to_encrypt, key):
 
 # <====================== DECRYPTION =========================>
 def decrypt(input_filename, key):
-	aesgcm = AESGCM(key)
+	fernet = Fernet(key)
 
-	encrypted_data = None
-	decrypted_data = None
+	decrypted_data = bytes()
+
+	filesize = os.stat(input_filename).st_size
+	dec_size = 0
 
 	with open(input_filename, 'rb') as fin:
-		data = fin.read() # Read the bytes of the input file
+		while True:
+			size_data = fin.read(4)
+			if len(size_data) == 0:
+				break
+			encrypted_chunk = fin.read(struct.unpack('<I', size_data)[0])
+			decrypted_data += fernet.decrypt(encrypted_chunk)
+			dec_size += len(encrypted_chunk)
+			print('Progress: ', dec_size / filesize)
 
-		encrypted_data, auth = data.rsplit(b'AUTH:', 1)
-		encrypted_data, nonce = encrypted_data.rsplit(b'NC:', 1)
-
-		try:
-			decrypted_data = aesgcm.decrypt(nonce, encrypted_data, auth)
-		except InvalidTag:
-			print("Invalid auth, nonce or key")
-			exit(-1)
-		
 	return decrypted_data
 
 def run_decryption(file_to_decrypt, key):
